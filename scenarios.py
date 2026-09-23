@@ -85,8 +85,3 @@ def generate_scenarios(n_scenarios=500, pipe_length=1000, n_points=500,
 
     return temperature_profiles, truths, chainages  
 
-
-if __name__ == "__main__":
-    temperature_profiles, truths, chainages = generate_scenarios(n_scenarios=10)
-    print(truths)
-    print(f"\nX shape: {temperature_profiles.shape}  (scenarios x sensor points along pipe)")
