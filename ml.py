@@ -6,9 +6,7 @@ event occurred, and if so, (2) estimate where along the pipe it happened.
 Rather than feeding the raw 500-point profile directly into a model (which
 would need many more training examples to learn from reliably), we first
 extract a handful of descriptive features from each profile - summary
-statistics that capture the shape of the curve. This is standard practice
-for scikit-learn style models, as opposed to deep learning approaches
-which learn directly from raw grid/image data.
+statistics that capture the shape of the curve. 
 
 Two separate models are trained:
   - a classifier: does this profile contain an inflow event at all?
@@ -48,80 +46,43 @@ def build_feature_matrix(X, feature_names=None):
     return np.array([[f[k] for k in feature_names] for f in feats]), feature_names
 
 
-if __name__ == "__main__":
-    from scenarios import generate_scenarios
-    from naive import naive_detect
+def deviation_curve(row, window=25):
+    """The raw temperature profile minus its own smoothed baseline -
+    used as input to the regressor, since it keeps the full spatial
+    resolution a compressed feature vector would otherwise lose."""
+    return row - uniform_filter1d(row, size=window)
 
-    print("Generating training and test data...")
-    X_train_raw, y_train, positions = generate_scenarios(n_scenarios=800, seed=10)
-    X_test_raw, y_test, _ = generate_scenarios(n_scenarios=200, seed=99)
 
+def train_ml_classifier(X_train_raw, y_train):
+    """Trains a random forest classifier on summary features to decide
+    whether a profile contains an inflow event at all."""
     X_train, feature_names = build_feature_matrix(X_train_raw)
-    X_test, _ = build_feature_matrix(X_test_raw)
-
-    print(f"Features used: {feature_names}\n")
-
-    # --- Classifier: is there an inflow at all? ---
     clf = RandomForestClassifier(n_estimators=200, random_state=0)
     clf.fit(X_train, y_train["has_inflow"])
-    pred_has_inflow = clf.predict(X_test)
+    return clf, feature_names
 
-    ml_accuracy = accuracy_score(y_test["has_inflow"], pred_has_inflow)
 
-    # --- Regressor: where does the inflow occur? ---
-    # Unlike the classifier above, this uses the raw deviation curve (500
-    # points) rather than the compressed summary features. Location is a
-    # spatial question, and compressing the profile down to a handful of
-    # statistics first throws away exactly the fine-grained positional
-    # detail needed to answer it precisely - the same reason Lansey's CNN
-    # works directly on the full residual grid rather than on summary
-    # statistics of it. Here we get that same benefit cheaply, without a
-    # CNN, by simply giving the regressor the full deviation curve.
-    from scipy.ndimage import uniform_filter1d as _smooth
-
-    def deviation_curve(row, window=25):
-        return row - _smooth(row, size=window)
-
+def train_ml_regressor(X_train_raw, y_train):
+    """Trains a random forest regressor on the raw deviation curve to
+    estimate where along the pipe an inflow occurs."""
     X_train_dev = np.array([deviation_curve(row) for row in X_train_raw])
-    X_test_dev = np.array([deviation_curve(row) for row in X_test_raw])
-
     train_mask = y_train["has_inflow"].values
-    test_mask = y_test["has_inflow"].values
 
     reg = RandomForestRegressor(n_estimators=200, random_state=0)
     reg.fit(X_train_dev[train_mask], y_train.loc[train_mask, "position_m"])
+    return reg
+
+
+def evaluate_ml_classifier(clf, X_test_raw, y_test):
+    X_test, _ = build_feature_matrix(X_test_raw)
+    pred = clf.predict(X_test)
+    return accuracy_score(y_test["has_inflow"], pred)
+
+
+def evaluate_ml_regressor(reg, X_test_raw, y_test):
+    X_test_dev = np.array([deviation_curve(row) for row in X_test_raw])
+    test_mask = y_test["has_inflow"].values
+
     pred_position = reg.predict(X_test_dev[test_mask])
     true_position = y_test.loc[test_mask, "position_m"].values
-
-    ml_location_error = np.abs(pred_position - true_position)
-
-    # --- Compare against the naive threshold detector on the same test set ---
-    naive_correct = 0
-    naive_location_errors = []
-    for i in range(len(y_test)):
-        detected, loc_idx = naive_detect(X_test_raw[i])
-        truth = y_test.iloc[i]
-        if detected == truth["has_inflow"]:
-            naive_correct += 1
-        if truth["has_inflow"] and detected:
-            naive_location_errors.append(abs(truth["position_m"] - positions[loc_idx]))
-
-    print("=" * 55)
-    print("DETECTION (inflow present or not)")
-    print(f"  Naive threshold accuracy : "
-          f"{100*naive_correct/len(y_test):.1f}%")
-    print(f"  ML classifier accuracy   : {100*ml_accuracy:.1f}%")
-    print()
-    print("LOCATION ESTIMATE (metres of error, when an inflow is present)")
-    print(f"  Naive threshold - mean   : {np.mean(naive_location_errors):.1f} m"
-          f"   median: {np.median(naive_location_errors):.1f} m")
-    print(f"  ML regressor    - mean   : {np.mean(ml_location_error):.1f} m"
-          f"   median: {np.median(ml_location_error):.1f} m")
-    print("=" * 55)
-
-    # Feature importance - which summary statistics mattered most?
-    importances = sorted(zip(feature_names, clf.feature_importances_),
-                          key=lambda x: -x[1])
-    print("\nWhich features mattered most for detection:")
-    for name, imp in importances:
-        print(f"  {name:25s} {imp:.3f}")
+    return np.abs(pred_position - true_position)
