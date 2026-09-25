@@ -51,9 +51,6 @@ and a warm inflow at 650 m.
 
 ## The chain of reasoning
 
-This is the part worth reading properly, since the project's real value
-is in *why* each method was tried, not just that it was.
-
 ### 1. Naive threshold detector — the baseline
 
 Smooth the profile, look at how far the raw signal deviates from that
@@ -103,11 +100,25 @@ successfully find the bump pattern, but the model's final layers
 (`Flatten()` followed by `Dense` layers) destroy the direct link between
 "a feature was found here" and "here is a physical position on the
 pipe." Once the feature map is flattened into one long list of numbers,
-the network has no explicit sense of position left — it has to relearn
-that mapping from scratch through ordinary dense weights, and with a
-dataset this size, it only ever learns it approximately. The result was
-a median location error of roughly 55–65 m (naive's median error, when
-it detects at all, is 2.5 m).
+the network has no explicit sense of position left, and has to relearn
+that mapping from scratch.
+
+Concretely: the convolutional layer is small (16 patterns of 15 numbers
+each, 256 learned weights in total) and reuses those same weights at every
+position, which is what lets it recognise a bump anywhere. But `Flatten()`
+then lays its output out as one long list of 2,000 numbers (125 positions
+× 16 pattern scores), and the `Dense` layer that follows gives every one
+of those 2,000 slots its own separate weight — over 128,000 of the
+model's roughly 128,400 learned numbers. Position survives only as a
+slot's place in the list, and nothing tells the layer that neighbouring
+slots are neighbouring places on the pipe. To output "about 40% of the
+way along" it has to learn that a strong signal in slots 800–815 means
+0.4, and then learn the equivalent separately for every other stretch of
+the pipe. That is the same problem the random forest had, from the same
+kind of limited data (about 2,100 examples spread across the whole
+pipe), so it only ever learns it approximately. The result was a median
+location error of roughly 55–65 m (naive's median error, when it detects
+at all, is 2.5 m).
 
 ### 4. CNN with softmax over position — the actual fix
 
@@ -122,7 +133,9 @@ kernel, just to collapse multiple filter channels into a single score
 per position) followed directly by a softmax. There is no point at which
 position is ever converted into an unordered list of numbers — position
 index 340 in the input is still position index 340 in the output. The
-single highest-probability position becomes the location guess.
+single highest-probability position becomes the location guess. Because
+each output slot already *is* a position, there is no slot-to-position
+mapping left for the network to learn.
 
 This fixed the location problem outright: median location error of
 about 1.2 m, better than naive's own 2.5 m.
