@@ -98,21 +98,12 @@ def train_cnn_regressor(train_temperature_profiles, train_truths, pipe_length,
     return model
 
 
-def evaluate_cnn_regressor(model, test_temperature_profiles, test_truths, pipe_length):
-    """Returns the regressor's location error (metres) for every scenario
-    in the test set that actually has an inflow."""
-    # only score scenarios that really have an inflow
-    has_inflow_mask = test_truths["has_inflow"].values
-
+def predict_cnn_regressor(model, test_temperature_profiles, pipe_length):
+    """Returns the regressor's position guess (metres) for every scenario.
+    It has no way of saying "no inflow" - it always outputs a position."""
     # same preprocessing as training: deviation curves + channel axis
-    test_deviation_curves = build_deviation_curves(test_temperature_profiles)[has_inflow_mask]
-    test_deviation_curves = test_deviation_curves[..., np.newaxis]
-
-    true_position_m = test_truths.loc[has_inflow_mask, "position_m"].values
+    test_deviation_curves = build_deviation_curves(test_temperature_profiles)[..., np.newaxis]
 
     # model predicts a 0-1 fraction, scale back up to metres
     predicted_fractions = model.predict(test_deviation_curves, verbose=0).flatten()
-    predicted_position_m = predicted_fractions * pipe_length
-
-    # absolute error in metres for each scenario
-    return np.abs(predicted_position_m - true_position_m)
+    return predicted_fractions * pipe_length
