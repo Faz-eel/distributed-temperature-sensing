@@ -32,37 +32,22 @@ def naive_detect(temperature_profile, threshold=0.5, smoothing_window=25):
         return False, None
 
 
-def evaluate_naive_detector(temperature_profiles, truths, positions):
+def predict_naive(temperature_profiles, positions):
     """
-    Runs naive_detect() across every scenario in temperature_profiles and
-    returns a summary: overall detect/no-detect accuracy, and location
-    error only for the scenarios it actually flagged as containing an
-    inflow.
+    Runs naive_detect() on every scenario. Returns:
+        detected: True/False per scenario
+        predicted_position_m: position guess per scenario in metres
+            (NaN wherever nothing was flagged)
     """
-    correct_detection = 0
-    location_errors = []
+    detected = np.zeros(len(temperature_profiles), dtype=bool)
+    predicted_position_m = np.full(len(temperature_profiles), np.nan)
 
-    # marks scenarios that truly have an inflow AND were flagged by the detector
-    detected_mask = np.zeros(len(truths), dtype=bool)
+    for i, profile in enumerate(temperature_profiles):
+        is_flagged, estimated_index = naive_detect(profile)
+        detected[i] = is_flagged
 
-    for i in range(len(truths)):
-        detected, estimated_index = naive_detect(temperature_profiles[i])
-        truth = truths.iloc[i]
+        # convert the estimated index to metres
+        if is_flagged:
+            predicted_position_m[i] = positions[estimated_index]
 
-        # count the yes/no call as correct if it matches the ground truth
-        if detected == truth["has_inflow"]:
-            correct_detection += 1
-
-        # location error only counts when there was an inflow and it was flagged
-        if truth["has_inflow"] and detected:
-            detected_mask[i] = True
-
-            # convert the estimated index to metres and compare with the true position
-            location_errors.append(abs(truth["position_m"] - positions[estimated_index]))
-
-    return {
-        "accuracy": correct_detection / len(truths),
-        "n_detected": len(location_errors),
-        "location_errors": np.array(location_errors),
-        "detected_mask": detected_mask,
-    }
+    return detected, predicted_position_m
