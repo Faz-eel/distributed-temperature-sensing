@@ -3,10 +3,12 @@ Runs the full distributed temperature sensing (DTS) project end to end:
 
   1. Preview the underlying physics (three example temperature profiles)
   2. Generate a training and test set of scenarios
-  3. Evaluate the naive threshold detector
-  4. Train and evaluate the random forest classifier + regressor
-  5. Train and evaluate two neural network approaches (a regressor, and a
-     combined softmax-over-position model), and compare all methods
+  3. Run the naive threshold detector
+  4. Train and run the random forest classifier + regressor
+  5. Train and run two neural network approaches (a regressor, and a
+     combined softmax-over-position model)
+  6. Score every method on every test scenario, with and without an
+     inflow, and print one side-by-side comparison
 """
 
 import numpy as np
@@ -16,13 +18,11 @@ import matplotlib.pyplot as plt
 
 from physics import simulate_dts_profile
 from scenarios import generate_scenarios
-from naive import evaluate_naive_detector
-from ml import (
-    train_ml_classifier, train_ml_regressor,
-    evaluate_ml_classifier, evaluate_ml_regressor,
-)
-from cnn import train_cnn_regressor, evaluate_cnn_regressor
-from cnn_softmax import train_cnn_location_softmax, evaluate_cnn_location_softmax
+from evaluate import evaluate_predictions
+from naive import predict_naive
+from ml import train_ml_classifier, train_ml_regressor, predict_ml
+from cnn import train_cnn_regressor, predict_cnn_regressor
+from cnn_softmax import train_cnn_location_softmax, predict_cnn_location_softmax
 
 
 PIPE_LENGTH = 1000
@@ -53,93 +53,112 @@ def preview_physics():
     print("Saved dts_profiles_preview.png\n")
 
 
-def run_naive_baseline(X_test_raw, y_test, positions):
-    print("=" * 65)
-    print("STEP 1: NAIVE THRESHOLD DETECTOR")
-    print("=" * 65)
-    result = evaluate_naive_detector(X_test_raw, y_test, positions)
-    print(f"Detect/no-detect accuracy : {100*result['accuracy']:.1f}%")
-    print(f"Location error (n={result['n_detected']}) - "
-          f"mean: {result['location_errors'].mean():.1f} m   "
-          f"median: {np.median(result['location_errors']):.1f} m\n")
-    return result
+def run_naive(test_temperature_profiles, test_truths, positions):
+    print("Running naive threshold detector...")
+    detected, predicted_position_m = predict_naive(test_temperature_profiles, positions)
+    return evaluate_predictions(test_truths, detected, predicted_position_m)
 
 
-def run_random_forest(X_train_raw, y_train, X_test_raw, y_test, naive_result):
-    print("=" * 65)
-    print("STEP 2: RANDOM FOREST (summary features + raw deviation curve)")
-    print("=" * 65)
+def run_random_forest(train_temperature_profiles, train_truths,
+                      test_temperature_profiles, test_truths):
+    print("Training random forest classifier + regressor...")
+    classifier, feature_names = train_ml_classifier(train_temperature_profiles, train_truths)
+    regressor = train_ml_regressor(train_temperature_profiles, train_truths)
 
-    clf, feature_names = train_ml_classifier(X_train_raw, y_train)
-    ml_accuracy = evaluate_ml_classifier(clf, X_test_raw, y_test)
+    detected, predicted_position_m = predict_ml(classifier, regressor, test_temperature_profiles)
 
-    reg = train_ml_regressor(X_train_raw, y_train)
-    ml_location_error = evaluate_ml_regressor(reg, X_test_raw, y_test)
+    # which summary statistics the classifier relied on most
+    importances = sorted(zip(feature_names, classifier.feature_importances_),
+                         key=lambda pair: -pair[1])
+    print("  Which features mattered most for detection:")
+    for name, importance in importances:
+        print(f"    {name:25s} {importance:.3f}")
 
-    print(f"Detection accuracy - naive: {100*naive_result['accuracy']:.1f}%   "
-          f"random forest: {100*ml_accuracy:.1f}%")
-    print(f"Location error - naive median: "
-          f"{np.median(naive_result['location_errors']):.1f} m   "
-          f"random forest median: {np.median(ml_location_error):.1f} m")
-
-    importances = sorted(zip(feature_names, clf.feature_importances_),
-                          key=lambda x: -x[1])
-    print("\nWhich features mattered most for detection:")
-    for name, imp in importances:
-        print(f"  {name:25s} {imp:.3f}")
-    print()
-
-    return ml_accuracy
+    return evaluate_predictions(test_truths, detected, predicted_position_m)
 
 
-def run_cnn(X_train_raw, y_train, X_test_raw, y_test, positions, naive_result, rf_accuracy):
-    print("=" * 65)
-    print("STEP 3: NEURAL NETWORK MODELS")
-    print("=" * 65)
+def run_cnn_regressor(train_temperature_profiles, train_truths,
+                      test_temperature_profiles, test_truths):
+    print("Training CNN regressor (single number output)...")
+    model = train_cnn_regressor(train_temperature_profiles, train_truths, pipe_length=PIPE_LENGTH)
+    predicted_position_m = predict_cnn_regressor(model, test_temperature_profiles,
+                                                 pipe_length=PIPE_LENGTH)
 
-    print("Training regressor (single number output)...")
-    reg_model = train_cnn_regressor(X_train_raw, y_train, pipe_length=PIPE_LENGTH)
-    cnn_error = evaluate_cnn_regressor(reg_model, X_test_raw, y_test, pipe_length=PIPE_LENGTH)
+    # this model cannot say "no inflow", so detected is None
+    return evaluate_predictions(test_truths, None, predicted_position_m)
 
-    print("\nTraining softmax-over-position model "
+
+def run_cnn_softmax(train_temperature_profiles, train_truths,
+                    test_temperature_profiles, test_truths, positions):
+    print("Training CNN softmax-over-position model "
           "(one model, answers detection and location together)...")
-    softmax_model = train_cnn_location_softmax(X_train_raw, y_train, pipe_length=PIPE_LENGTH)
-    softmax_detected, softmax_accuracy, softmax_errors, softmax_peak_probs = \
-        evaluate_cnn_location_softmax(softmax_model, X_test_raw, y_test, positions)
+    model = train_cnn_location_softmax(train_temperature_profiles, train_truths,
+                                       pipe_length=PIPE_LENGTH)
+    detected, predicted_position_m, _ = predict_cnn_location_softmax(
+        model, test_temperature_profiles, positions)
 
-    print("\n" + "-" * 65)
-    print("DETECTION (inflow present or not)")
-    print(f"  Naive threshold        : {100*naive_result['accuracy']:.1f}%")
-    print(f"  Random forest          : {100*rf_accuracy:.1f}%")
-    print(f"  Neural net (softmax, from its own peak probability) : "
-          f"{100*softmax_accuracy:.1f}%")
+    return evaluate_predictions(test_truths, detected, predicted_position_m)
 
-    print("\nLOCATION ESTIMATE (metres of error)")
-    print(f"  Naive threshold (only the {naive_result['n_detected']} scenarios it "
-          f"was confident enough to flag) - mean: "
-          f"{naive_result['location_errors'].mean():.1f} m   "
-          f"median: {np.median(naive_result['location_errors']):.1f} m")
-    print(f"  Neural net, regressor (forced to guess on all "
-          f"{len(cnn_error)} scenarios) - mean: {cnn_error.mean():.1f} m   "
-          f"median: {np.median(cnn_error):.1f} m")
-    print(f"  Neural net, softmax-over-position (all "
-          f"{len(softmax_errors)} scenarios with an inflow) - mean: "
-          f"{softmax_errors.mean():.1f} m   median: {np.median(softmax_errors):.1f} m")
-    print("=" * 65)
+
+def format_percent(value):
+    return "n/a" if value is None else f"{100 * value:.1f}%"
+
+
+def print_comparison(results, test_truths):
+    n_scenarios = len(test_truths)
+    n_inflow = int(test_truths["has_inflow"].sum())
+
+    print("\n" + "=" * 96)
+    print(f"ALL {n_scenarios} TEST SCENARIOS: {n_inflow} with an inflow, "
+          f"{n_scenarios - n_inflow} without")
+    print("=" * 96)
+    print(f"{'method':32s}{'detection':>11s}{'false':>9s}{'missed':>9s}"
+          f"{'median':>10s}{'mean':>9s}{'located':>10s}")
+    print(f"{'':32s}{'accuracy':>11s}{'alarms':>9s}{'inflows':>9s}"
+          f"{'error m':>10s}{'error m':>9s}{'<10 m':>10s}")
+    print("-" * 96)
+
+    for name, result in results.items():
+        errors = result["location_errors"]
+        print(f"{name:32s}"
+              f"{format_percent(result['detection_accuracy']):>11s}"
+              f"{format_percent(result['false_alarm_rate']):>9s}"
+              f"{format_percent(result['miss_rate']):>9s}"
+              f"{np.median(errors):>10.1f}"
+              f"{errors.mean():>9.1f}"
+              f"{format_percent(result['hit_rate']):>10s}")
+
+    print("=" * 96)
+    print("detection accuracy: right yes/no call, over all scenarios")
+    print("false alarms: no-inflow scenarios wrongly flagged   "
+          "missed inflows: inflow scenarios not flagged")
+    print("location error: only scenarios with an inflow that the method flagged")
+    print("located <10 m: share of ALL inflow scenarios flagged AND placed within 10 m "
+          "(misses count against it)")
+    print("CNN regressor cannot say 'no inflow', so it is scored as if it flagged everything")
 
 
 def main():
     preview_physics()
 
     print("Generating training and test data...\n")
-    X_train_raw, y_train, positions = generate_scenarios(
+    train_temperature_profiles, train_truths, positions = generate_scenarios(
         n_scenarios=3000, pipe_length=PIPE_LENGTH, seed=10)
-    X_test_raw, y_test, _ = generate_scenarios(
+    test_temperature_profiles, test_truths, _ = generate_scenarios(
         n_scenarios=500, pipe_length=PIPE_LENGTH, seed=99)
 
-    naive_result = run_naive_baseline(X_test_raw, y_test, positions)
-    rf_accuracy = run_random_forest(X_train_raw, y_train, X_test_raw, y_test, naive_result)
-    run_cnn(X_train_raw, y_train, X_test_raw, y_test, positions, naive_result, rf_accuracy)
+    results = {}
+    results["Naive threshold"] = run_naive(
+        test_temperature_profiles, test_truths, positions)
+    results["Random forest"] = run_random_forest(
+        train_temperature_profiles, train_truths, test_temperature_profiles, test_truths)
+    results["CNN regressor"] = run_cnn_regressor(
+        train_temperature_profiles, train_truths, test_temperature_profiles, test_truths)
+    results["CNN softmax-over-position"] = run_cnn_softmax(
+        train_temperature_profiles, train_truths, test_temperature_profiles, test_truths,
+        positions)
+
+    print_comparison(results, test_truths)
 
 
 if __name__ == "__main__":
