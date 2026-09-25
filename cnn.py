@@ -34,16 +34,6 @@ def build_cnn_regressor(n_points):
     (n_points long), output is a single number - the predicted inflow
     position in metres (normalised to 0-1 during training, rescaled
     afterwards).
-
-    Deliberately kept to one convolutional layer. A second layer exists,
-    in general, to combine simple first-layer patterns into more complex,
-    composite ones - which matters when the underlying signal has real
-    hierarchy to exploit (as in an image, where edges combine into
-    shapes). Here, the signal is just a single, isolated bump - there is
-    no sub-structure for a second layer to meaningfully compose. Adding
-    one would mostly add parameters without giving the model anything
-    genuinely new to learn, at real risk of overfitting a dataset this
-    size.
     """
     model = keras.Sequential([
         # one sample = n_points readings with 1 channel (the deviation value)
