@@ -3,17 +3,7 @@ A 1D convolutional neural network that answers BOTH questions this
 project cares about - is there an inflow, and if so, where - using a
 single softmax output over every position along the pipe, rather than
 two separate models.
-
-Each of the n_points outputs represents "how likely is the inflow to be
-at this exact chainage", and softmax forces all of them to sum to 1. The
-single highest-probability position is the location guess. That same
-peak probability also answers detection: the model is only ever trained
-on scenarios that DO have an inflow, so when it is shown a genuinely
-normal profile with nothing to find, it has no strong pattern to lock
-onto and spreads its uncertainty out across all 500 positions instead of
-committing to one. 
-
-The key structural difference from cnn_regressor.py: there is no
+The key structural difference from cnn.py: there is no
 Flatten() layer feeding into a Dense stack here. The regressor's
 Flatten() step destroys the direct correspondence between "a feature was
 found here" and "here is a physical position on the pipe" - everything
@@ -106,19 +96,17 @@ def train_cnn_location_softmax(train_temperature_profiles, train_truths, pipe_le
     return model
 
 
-def evaluate_cnn_location_softmax(model, test_temperature_profiles, test_truths, positions,
-                                   detection_threshold=0.1):
+def predict_cnn_location_softmax(model, test_temperature_profiles, positions,
+                                 detection_threshold=0.1):
     """
     Runs every scenario in the test set - both with and without an
     inflow - through the model, and answers both questions from the
     same set of predicted probabilities.
 
     Returns:
-        detected: boolean array, one per scenario in test_temperature_profiles - True
-            if the model's peak probability exceeds detection_threshold
-        accuracy: overall detect/no-detect accuracy against ground truth
-        location_errors: metres of error, but only for scenarios that
-            actually have an inflow (location is meaningless otherwise)
+        detected: boolean array, one per scenario - True if the model's
+            peak probability exceeds detection_threshold
+        predicted_position_m: position guess per scenario, in metres
         peak_probabilities: the raw peak probability for every scenario,
             for reference
     """
@@ -134,12 +122,8 @@ def evaluate_cnn_location_softmax(model, test_temperature_profiles, test_truths,
 
     # detection: call it an inflow if the model is confident enough in one position
     detected = peak_probabilities > detection_threshold
-    has_inflow_mask = test_truths["has_inflow"].values
-    accuracy = (detected == has_inflow_mask).mean()
 
-    # location error in metres, only for scenarios that really have an inflow
-    predicted_position_m = positions[predicted_index][has_inflow_mask]
-    true_position_m = test_truths.loc[has_inflow_mask, "position_m"].values
-    location_errors = np.abs(predicted_position_m - true_position_m)
+    # convert the winning index to metres
+    predicted_position_m = positions[predicted_index]
 
-    return detected, accuracy, location_errors, peak_probabilities
+    return detected, predicted_position_m, peak_probabilities
