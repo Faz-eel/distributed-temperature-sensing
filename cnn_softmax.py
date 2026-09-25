@@ -4,12 +4,6 @@ project cares about - is there an inflow, and if so, where - using a
 single softmax output over every position along the pipe, rather than
 two separate models.
 
-This exists because of a direct question raised about cnn_regressor.py:
-if the goal is to say where an inflow is, why not have the model output
-a probability for every possible chainage directly, instead of forcing
-it through a single continuous number? That turned out to be exactly
-right, and this file is the result.
-
 Each of the n_points outputs represents "how likely is the inflow to be
 at this exact chainage", and softmax forces all of them to sum to 1. The
 single highest-probability position is the location guess. That same
@@ -17,12 +11,7 @@ peak probability also answers detection: the model is only ever trained
 on scenarios that DO have an inflow, so when it is shown a genuinely
 normal profile with nothing to find, it has no strong pattern to lock
 onto and spreads its uncertainty out across all 500 positions instead of
-committing to one. Empirically, the peak probability averages around
-0.43 when a real inflow is present, versus around 0.03 when there is
-none - a large, usable gap, checked directly against held-out normal
-scenarios the model never saw during training. Thresholding that one
-number (default 0.1) gives a detection accuracy close to a dedicated
-classifier, from a single forward pass through a single model.
+committing to one. 
 
 The key structural difference from cnn_regressor.py: there is no
 Flatten() layer feeding into a Dense stack here. The regressor's
@@ -34,12 +23,6 @@ chainage, all the way from input to output, via a second Conv1D layer
 with kernel_size=1 that collapses the 16 filter channels down to one
 score per position, followed directly by softmax. Position is never
 flattened away.
-
-Result: this fixed the location problem outright (median error ~1.2m,
-matching the naive threshold detector's own precision), and turned out
-to carry a usable detection signal for free, from the same probabilities
-already being computed for location. See README.md for the full
-comparison.
 """
 
 import numpy as np
@@ -83,13 +66,6 @@ def build_cnn_location_softmax(n_points):
 def train_cnn_location_softmax(train_temperature_profiles, train_truths, pipe_length=1000,
                                 epochs=30, batch_size=32):
     """
-    Trains the softmax-over-position model. Only trained on scenarios
-    with an inflow, since "which position is it at" is meaningless for a
-    normal scenario with no inflow at all - the model's detection ability
-    (see evaluate_cnn_location_softmax) comes purely from how it behaves
-    on scenarios unlike anything it was trained on, not from being shown
-    explicit negative examples.
-
     The target for each training example is a one-hot vector: 1.0 at the
     true position's index, 0.0 everywhere else - the standard way to
     train a softmax classifier when there is one correct category per
