@@ -5,12 +5,8 @@ Runs the full distributed temperature sensing (DTS) project end to end:
   2. Generate a training and test set of scenarios
   3. Evaluate the naive threshold detector
   4. Train and evaluate the random forest classifier + regressor
-  5. Train and evaluate the 1D CNN, and compare it fairly against naive
-
-Each step's real logic lives in its own module (dts_physics.py,
-scenarios.py, naive_detector.py, ml_detector.py, cnn_detector.py), which
-are now pure collections of functions with no executable code of their
-own. This file is the only place anything actually runs.
+  5. Train and evaluate two neural network approaches (a regressor, and a
+     combined softmax-over-position model), and compare all methods
 """
 
 import numpy as np
@@ -25,7 +21,8 @@ from ml import (
     train_ml_classifier, train_ml_regressor,
     evaluate_ml_classifier, evaluate_ml_regressor,
 )
-from cnn import train_cnn, evaluate_cnn
+from cnn import train_cnn_regressor, evaluate_cnn_regressor
+from cnn_softmax import train_cnn_location_softmax, evaluate_cnn_location_softmax
 
 
 PIPE_LENGTH = 1000
@@ -92,32 +89,42 @@ def run_random_forest(X_train_raw, y_train, X_test_raw, y_test, naive_result):
         print(f"  {name:25s} {imp:.3f}")
     print()
 
+    return ml_accuracy
 
-def run_cnn(X_train_raw, y_train, X_test_raw, y_test, positions, naive_result):
+
+def run_cnn(X_train_raw, y_train, X_test_raw, y_test, positions, naive_result, rf_accuracy):
     print("=" * 65)
-    print("STEP 3: 1D CONVOLUTIONAL NEURAL NETWORK")
+    print("STEP 3: NEURAL NETWORK MODELS")
     print("=" * 65)
 
-    model = train_cnn(X_train_raw, y_train, pipe_length=PIPE_LENGTH)
-    cnn_error_all = evaluate_cnn(model, X_test_raw, y_test, pipe_length=PIPE_LENGTH)
+    print("Training regressor (single number output)...")
+    reg_model = train_cnn_regressor(X_train_raw, y_train, pipe_length=PIPE_LENGTH)
+    cnn_error = evaluate_cnn_regressor(reg_model, X_test_raw, y_test, pipe_length=PIPE_LENGTH)
 
-    # Fair comparison: only look at the same scenarios the naive detector
-    # actually flagged, since it is never penalised for the ones it skips
-    test_mask = y_test["has_inflow"].values
-    naive_detected_mask = naive_result["detected_mask"][test_mask]
-    cnn_error_same_subset = cnn_error_all[naive_detected_mask]
+    print("\nTraining softmax-over-position model "
+          "(one model, answers detection and location together)...")
+    softmax_model = train_cnn_location_softmax(X_train_raw, y_train, pipe_length=PIPE_LENGTH)
+    softmax_detected, softmax_accuracy, softmax_errors, softmax_peak_probs = \
+        evaluate_cnn_location_softmax(softmax_model, X_test_raw, y_test, positions)
 
-    print(f"\nAll {len(cnn_error_all)} inflow scenarios in the test set:")
-    print(f"  1D CNN (forced to guess on every scenario) - "
-          f"mean: {cnn_error_all.mean():.1f} m   "
-          f"median: {np.median(cnn_error_all):.1f} m")
+    print("\n" + "-" * 65)
+    print("DETECTION (inflow present or not)")
+    print(f"  Naive threshold        : {100*naive_result['accuracy']:.1f}%")
+    print(f"  Random forest          : {100*rf_accuracy:.1f}%")
+    print(f"  Neural net (softmax, from its own peak probability) : "
+          f"{100*softmax_accuracy:.1f}%")
 
-    print(f"\nOnly the {naive_detected_mask.sum()} scenarios the naive "
-          f"detector actually flagged (fair comparison):")
-    print(f"  Naive threshold - mean: {naive_result['location_errors'].mean():.1f} m"
-          f"   median: {np.median(naive_result['location_errors']):.1f} m")
-    print(f"  1D CNN          - mean: {cnn_error_same_subset.mean():.1f} m"
-          f"   median: {np.median(cnn_error_same_subset):.1f} m")
+    print("\nLOCATION ESTIMATE (metres of error)")
+    print(f"  Naive threshold (only the {naive_result['n_detected']} scenarios it "
+          f"was confident enough to flag) - mean: "
+          f"{naive_result['location_errors'].mean():.1f} m   "
+          f"median: {np.median(naive_result['location_errors']):.1f} m")
+    print(f"  Neural net, regressor (forced to guess on all "
+          f"{len(cnn_error)} scenarios) - mean: {cnn_error.mean():.1f} m   "
+          f"median: {np.median(cnn_error):.1f} m")
+    print(f"  Neural net, softmax-over-position (all "
+          f"{len(softmax_errors)} scenarios with an inflow) - mean: "
+          f"{softmax_errors.mean():.1f} m   median: {np.median(softmax_errors):.1f} m")
     print("=" * 65)
 
 
@@ -131,8 +138,8 @@ def main():
         n_scenarios=500, pipe_length=PIPE_LENGTH, seed=99)
 
     naive_result = run_naive_baseline(X_test_raw, y_test, positions)
-    run_random_forest(X_train_raw, y_train, X_test_raw, y_test, naive_result)
-    run_cnn(X_train_raw, y_train, X_test_raw, y_test, positions, naive_result)
+    rf_accuracy = run_random_forest(X_train_raw, y_train, X_test_raw, y_test, naive_result)
+    run_cnn(X_train_raw, y_train, X_test_raw, y_test, positions, naive_result, rf_accuracy)
 
 
 if __name__ == "__main__":
