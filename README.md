@@ -16,12 +16,10 @@ physics-based simulation (`physics.py`), so the project is a controlled
 way to compare different detection methods against a known, correct
 answer.
 
-This README exists mainly to explain *why* the project ended up with the
-methods it did — several approaches were tried, some failed in
-informative ways, and each failure directly motivated the next attempt.
-The numbers below all come from the same train/test data (3000 training
-scenarios, 500 test scenarios, fixed random seeds), so they are directly
-comparable to one another.
+This README compares four detection methods and explains why each one
+behaves the way it does. The numbers below all come from the same
+train/test data (3000 training scenarios, 500 test scenarios, fixed random
+seeds), so they are directly comparable to one another.
 
 ## Running it
 
@@ -44,12 +42,13 @@ and a warm inflow at 650 m.
 | `physics.py` | The physics: given an inflow's location, temperature, and rate, computes the resulting temperature profile along the pipe (energy-weighted mixing, then exponential decay back toward ground temperature). |
 | `scenarios.py` | Generates many random scenarios (with and without an inflow) by calling `physics.py` repeatedly. Returns the temperature profiles (an array of shape `(n_scenarios, n_points)`), the hidden ground truth for each scenario (a table with `has_inflow`, `position_m`, etc.), and the position in metres of each sensor point. |
 | `naive.py` | A simple threshold-based baseline: flag an inflow if the profile deviates from its own smoothed baseline by more than a fixed amount; locate it at the point of largest deviation. Only reports a location when it is confident enough to flag something at all. |
-| `ml.py` | A random forest classifier (detection) and regressor (location), the first machine learning attempt. |
+| `ml.py` | A random forest classifier (detection) and regressor (location). |
 | `cnn.py` | A 1D convolutional neural network that predicts location as one regressed number. **Did not work well** — kept as a documented negative result. |
-| `cnn_softmax.py` | A 1D convolutional neural network that predicts a probability for every position along the pipe. **This is the method that actually solved the location problem**, and its own probabilities turned out to double as a genuine detection signal too, so this single file does both jobs. |
-| `main.py` | Runs every method above on the same data and prints a full comparison. |
+| `cnn_softmax.py` | A 1D convolutional neural network that predicts a probability for every position along the pipe. **This is the method that solves the location problem**, and its own probabilities also double as a detection signal, so this single file does both jobs. |
+| `evaluate.py` | Scores any method against the ground truth on every scenario in the test set, including the ones with no inflow: detection accuracy, false alarms, missed inflows, and location error. |
+| `main.py` | Runs every method above on the same data, scores each with `evaluate.py`, and prints one side-by-side comparison. |
 
-## The chain of reasoning
+## The methods
 
 ### 1. Naive threshold detector — the baseline
 
@@ -59,13 +58,13 @@ threshold. The location guess is simply the position of the single
 largest deviation, reported only when the method is confident enough to
 flag something.
 
-Despite being the simplest method by far, this turned out to be very
-hard to beat on location specifically: when a real inflow signal exists,
+Despite being the simplest method by far, this is hard to beat on
+location specifically: when a real inflow signal exists,
 finding its peak directly is already close to the best possible answer,
 because a single, cleanly shaped bump doesn't leave much room for a
 cleverer method to improve on it.
 
-### 2. Random forest — first machine learning attempt
+### 2. Random forest
 
 A classifier decided whether an inflow was present, using a handful of
 summary statistics of the deviation curve (maximum deviation, standard
@@ -73,9 +72,8 @@ deviation, etc.). A separate regressor tried to predict *where*, fed the
 full 500-point deviation curve, since summary statistics would throw away
 exactly the positional detail that location needs.
 
-**This is where the first real, informative failure showed up.** Feeding
-the model the curve position by position made location prediction
-*worse*, not better — even worse than the naive method. The reason: each
+**Its location estimates are poor — far worse than the naive method.**
+Feeding the model the curve position by position is the problem: each
 of the 500 input columns corresponds to a *fixed* physical position
 (column 340 always means "340 metres along the pipe"), and a tree-based
 model has no notion that nearby columns are related. It has to learn a
@@ -85,19 +83,20 @@ that reliably. An inflow seen near column 340 in training tells the model
 almost nothing about one that occurs at column 120 in a different
 scenario.
 
-This result — position doesn't behave like an ordinary feature — is the
-reason the project moved to convolutional neural networks next.
+Position doesn't behave like an ordinary feature, which is what the
+convolutional networks below are designed to handle.
 
-### 3. CNN regressor — expected to fix the random forest's problem, and didn't
+### 3. CNN regressor
 
 A 1D convolution slides the *same* learned kernel across every position,
 so in principle it should recognise "a bump" wherever it occurs, without
 needing to relearn the pattern separately for each position — exactly
 the property the random forest was missing.
 
-**This is the second informative failure.** The convolutional layer does
-successfully find the bump pattern, but the model's final layers
-(`Flatten()` followed by `Dense` layers) destroy the direct link between
+**It recognises the bump but loses track of where it was.** The
+convolutional layer does successfully find the bump pattern, but the
+model's final layers (`Flatten()` followed by `Dense` layers) destroy the
+direct link between
 "a feature was found here" and "here is a physical position on the
 pipe." Once the feature map is flattened into one long list of numbers,
 the network has no explicit sense of position left, and has to relearn
@@ -116,18 +115,17 @@ way along" it has to learn that a strong signal in slots 800–815 means
 0.4, and then learn the equivalent separately for every other stretch of
 the pipe. That is the same problem the random forest had, from the same
 kind of limited data (about 2,100 examples spread across the whole
-pipe), so it only ever learns it approximately. The result was a median
-location error of roughly 55–65 m (naive's median error, when it detects
-at all, is 2.5 m).
+pipe), so it only ever learns it approximately. Its median location error
+is about 56 m in the results below (naive's, when it flags an inflow, is
+2.5 m).
 
-### 4. CNN with softmax over position — the actual fix
+### 4. CNN with softmax over position
 
-The regressor's failure raised an obvious question: if flattening away
-position is the problem, why not build a model whose output has one
-slot permanently assigned to each physical chainage, all the way through
-to the final layer?
+If flattening away position is the problem, the fix is a model whose
+output has one slot permanently assigned to each physical chainage, all
+the way through to the final layer.
 
-That is exactly what this model does. Instead of ending in a `Flatten()`
+That is what this model does. Instead of ending in a `Flatten()`
 plus `Dense(1)`, it ends in a second `Conv1D` layer (with a 1-point
 kernel, just to collapse multiple filter channels into a single score
 per position) followed directly by a softmax. There is no point at which
@@ -137,61 +135,74 @@ single highest-probability position becomes the location guess. Because
 each output slot already *is* a position, there is no slot-to-position
 mapping left for the network to learn.
 
-This fixed the location problem outright: median location error of
-about 1.2 m, better than naive's own 2.5 m.
+It locates inflows with a median error of about 1 m, better than
+naive's 2.5 m.
 
-**A second, unplanned result followed from this.** The model is only
-ever trained on scenarios that genuinely have an inflow — there is no
-target position to teach it for a normal profile. So the question arose:
-what does it do when shown a profile with nothing in it at all? Tested
-directly against held-out normal scenarios it never saw during training,
-the answer turned out to be useful on its own: with no real bump to lock
-onto, the model has nothing to confidently commit to, and spreads its
-probability out thinly across all 500 positions instead. The peak
-probability it reports averages around 0.5 when a genuine inflow is
-present, versus under 0.1 when there is none — a clear, usable gap.
-Thresholding that single number (peak probability > 0.1) turns out to
-answer detection as well as a purpose-built classifier would, using the
-exact same forward pass already computing location. That made a separate
-classifier model unnecessary, and this file now answers both of the
-project's original questions on its own.
+**Its probabilities also answer the detection question.** The model is
+only ever trained on scenarios that genuinely have an inflow — there is
+no target position to teach it for a normal profile. When it is shown a
+profile with nothing in it, it has no real bump to lock onto and spreads
+its probability thinly across all 500 positions instead of committing to
+one. On the test set, the peak probability averages around 0.5 for
+scenarios with an inflow and under 0.1 for those without — a clear gap.
+Thresholding that single number (peak probability > 0.1) answers
+detection better than the random forest classifier built for exactly
+that job, using the same forward pass that computes location. No separate
+classifier is needed, so this one model answers both of the project's
+questions.
 
 ## Summary of results
 
-All figures from the same 500-scenario test set. The random forest and
-naive results are identical on every run. The neural network results
-vary slightly from run to run (their starting weights are not seeded), so
-they are given as approximate figures.
+### How the methods are scored
 
-**Detection accuracy (is there an inflow at all):**
+Every method is scored on **all 500 test scenarios** — the 332 that have
+an inflow and the 168 that don't — by `evaluate.py`. The no-inflow
+scenarios are why the generator makes 30% of scenarios normal: without
+them there would be no way to measure false alarms, and a method that
+flagged everything would look perfect.
 
-| Method | Accuracy |
-|---|---|
-| Naive threshold | 77.4% |
-| Random forest | 79.4% |
-| Neural net (softmax model's own peak probability) | ~85–87% |
+For each scenario, a method reports whether it thinks there is an inflow
+and where. Each does it differently: the naive detector flags an inflow
+when its largest deviation crosses the threshold; the random forest's
+classifier makes the yes/no call and its regressor places the inflow; the
+softmax model flags an inflow when its peak probability is above 0.1 and
+places it at the peak. The CNN regressor has no way of saying "no
+inflow", so it is scored as if it had flagged every scenario, which is
+generous to it.
 
-**Location accuracy (where is it), median error in metres:**
+A location error only exists where there really is an inflow, so it is
+measured on the inflow scenarios a method flagged. That alone would let a
+method look accurate by only answering the easy cases, so the last column
+counts the share of **all** inflow scenarios that were both flagged and
+placed within 10 m. Misses count against it.
 
-| Method | Median error |
-|---|---|
-| Naive threshold (only on scenarios it was confident enough to flag) | 2.5 m |
-| Random forest (fed the full deviation curve) | 130.4 m |
-| CNN regressor (forced to guess on every scenario) | ~55–65 m |
-| **CNN, softmax over position** (all scenarios with a real inflow) | **1.2 m** |
+### Results
 
-Note that naive's location figure only covers the scenarios it was
-confident enough to flag in the first place, matching how it is actually
-meant to be used, while the other methods are scored on every scenario
-that has a real inflow. Even so, the softmax model's median precision
-matches or beats naive's.
+| Method | Detection accuracy | False alarms (of 168 no-inflow) | Missed (of 332 inflow) | Median location error | Mean location error | Located within 10 m |
+|---|---|---|---|---|---|---|
+| Naive threshold | 77.4% | 24.4% | 21.7% | 2.5 m | 35.2 m | 66.0% |
+| Random forest | 79.4% | 31.0% | 15.4% | 123.8 m | 138.8 m | 2.7% |
+| CNN regressor | n/a | n/a | n/a | 56.4 m | 92.0 m | 9.0% |
+| **CNN, softmax over position** | **85.8%** | **14.3%** | **14.2%** | **1.0 m** | **8.1 m** | **83.4%** |
 
-Medians hide a heavy tail, though. The softmax model's *mean* error is
-around 55 m, because roughly one in seven inflow scenarios is missed by
-more than 50 m — presumably weak inflows whose bump is buried in sensor
-noise, where there is no clear peak to lock onto. Naive shows the same
-pattern (2.5 m median, 35 m mean). Both methods are very precise when
-the signal is clear and can go badly wrong when it isn't.
+The random forest and naive results are identical on every run. The
+neural network results vary slightly from run to run because their
+starting weights are not seeded, so the two CNN rows are approximate.
+
+The softmax model is best on every measure. The naive detector is very
+precise when it does fire (2.5 m median) but flags roughly a quarter of
+the normal scenarios and misses over a fifth of the real inflows, so only
+two in three inflows end up both found and placed within 10 m. Its mean
+error of 35 m against a median of 2.5 m suggests that some of its flags
+land on a noise spike somewhere other than the real inflow. The random
+forest's detection is close to naive's, but its location estimates are
+poor. The CNN regressor still gets only 9% of inflows within 10 m even
+though it is never penalised for false alarms or misses.
+
+The softmax model's missed inflows (~14%) are the scenarios where its
+peak probability stays below the 0.1 threshold. A likely cause is weak
+inflows whose bump is buried in sensor noise, leaving no clear peak,
+though this has not been checked directly.
 
 ## Honest limitations
 
