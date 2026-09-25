@@ -90,23 +90,18 @@ def train_ml_regressor(train_temperature_profiles, train_truths):
     return regressor
 
 
-def evaluate_ml_classifier(classifier, test_temperature_profiles, test_truths):
+def predict_ml(classifier, regressor, test_temperature_profiles):
+    """
+    Runs both random forests on every scenario. Returns:
+        detected: the classifier's inflow / no inflow call per scenario
+        predicted_position_m: the regressor's position guess per scenario
+            (only meaningful where detected is True)
+    """
     test_features, _ = build_feature_matrix(test_temperature_profiles)
-    predicted_has_inflow = classifier.predict(test_features)
+    detected = classifier.predict(test_features).astype(bool)
 
-    # fraction of yes/no calls that match the ground truth
-    return accuracy_score(test_truths["has_inflow"], predicted_has_inflow)
-
-
-def evaluate_ml_regressor(regressor, test_temperature_profiles, test_truths):
     test_deviation_curves = np.array([deviation_curve(profile)
                                       for profile in test_temperature_profiles])
+    predicted_position_m = regressor.predict(test_deviation_curves)
 
-    # only score scenarios that really have an inflow
-    has_inflow_mask = test_truths["has_inflow"].values
-
-    predicted_position_m = regressor.predict(test_deviation_curves[has_inflow_mask])
-    true_position_m = test_truths.loc[has_inflow_mask, "position_m"].values
-
-    # absolute error in metres for each scenario
-    return np.abs(predicted_position_m - true_position_m)
+    return detected, predicted_position_m
