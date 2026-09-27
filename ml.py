@@ -6,9 +6,7 @@ event occurred, and if so, (2) estimate where along the pipe it happened.
 Rather than feeding the raw 500-point profile directly into a model (which
 would need many more training examples to learn from reliably), we first
 extract a handful of descriptive features from each profile - summary
-statistics that capture the shape of the curve. This is standard practice
-for scikit-learn style models, as opposed to deep learning approaches
-(like Lansey's CNN) which learn directly from raw grid/image data.
+statistics that capture the shape of the curve. 
 
 Two separate models are trained:
   - a classifier: does this profile contain an inflow event at all?
