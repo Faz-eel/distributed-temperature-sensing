@@ -42,9 +42,9 @@ and a warm inflow at 650 m.
 | `physics.py` | The physics: given an inflow's location, temperature, and rate, computes the resulting temperature profile along the pipe (energy-weighted mixing, then exponential decay back toward ground temperature). |
 | `scenarios.py` | Generates many random scenarios (with and without an inflow) by calling `physics.py` repeatedly. Returns the temperature profiles (an array of shape `(n_scenarios, n_points)`), the hidden ground truth for each scenario (a table with `has_inflow`, `position_m`, etc.), and the position in metres of each sensor point. |
 | `naive.py` | A simple threshold-based baseline: flag an inflow if the profile deviates from its own smoothed baseline by more than a fixed amount; locate it at the point of largest deviation. Only reports a location when it is confident enough to flag something at all. |
-| `ml.py` | A random forest classifier (detection) and regressor (location). |
-| `cnn.py` | A 1D convolutional neural network that predicts location as one regressed number. **Did not work well** — kept as a documented negative result. |
-| `cnn_softmax.py` | A 1D convolutional neural network that predicts a probability for every position along the pipe. **This is the method that solves the location problem**, and its own probabilities also double as a detection signal, so this single file does both jobs. |
+| `ml.py` | A random forest classifier (for detection) and regressor (to find the location). |
+| `cnn.py` | A 1D convolutional neural network that predicts location as one regressed number. It has no way of saying 'inflow found' or 'not found', it just outputs a score between 0-1, interpolated to find the location along the pipe length. |
+| `cnn_softmax.py` | A 1D convolutional neural network that predicts a probability for every position along the pipe. The probabilities also double as a detection signal, so this single model does both jobs. |
 | `evaluate.py` | Scores any method against the ground truth on every scenario in the test set, including the ones with no inflow: detection accuracy, false alarms, missed inflows, and location error. |
 | `main.py` | Runs every method above on the same data, scores each with `evaluate.py`, and prints one side-by-side comparison. |
 
